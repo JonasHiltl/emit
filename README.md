@@ -11,7 +11,7 @@ go get github.com/jonashiltl/emit
 ```
 
 ### Usage
-```
+```go
 e := new(emit.Emitter) // or &emit.Emmiter{}
 
 emit.On(e, func(t []MyEvent) {
