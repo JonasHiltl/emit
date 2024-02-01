@@ -86,16 +86,18 @@ func On[T any](e *Emitter, fn func([]T), options ...func(*OnOptions)) {
 	ch := make(chan any)
 	e.subs[key[T]{}] = append(e.subs[key[T]{}], ch)
 
-	go batch(ch, opts.batchSize, opts.timeout, fn)
+	go collect(ch, opts.batchSize, opts.timeout, fn)
 }
 
-// batch reads from a channel and calls fn with a slice of batchSize.
-// copied from https://github.com/smallnest/exp/blob/master/chanx/batcher.go
-func batch[T any](ch <-chan any, batchSize int, timeout time.Duration, fn func([]T)) {
-	var expire <-chan time.Time
+// collect reads from a channel and calls fn when batchSize is met or timeout is triggered
+func collect[T any](ch <-chan any, batchSize int, timeout time.Duration, fn func([]T)) {
+	var ticker *time.Ticker
 	if timeout > 0 {
-		expire = time.After(timeout)
+		ticker = time.NewTicker(timeout)
+	} else {
+		ticker = new(time.Ticker)
 	}
+	defer ticker.Stop()
 
 	for batchSize <= 1 { // sanity check,
 		for v := range ch {
@@ -108,45 +110,33 @@ func batch[T any](ch <-chan any, batchSize int, timeout time.Duration, fn func([
 	}
 
 	// batchSize > 1
-	var batch = make([]T, 0, batchSize)
+	batch := make([]T, 0, batchSize)
 	for {
 		select {
-		case <-expire:
+		case <-ticker.C:
 			if len(batch) > 0 {
 				fn(batch)
+				// reset
+				batch = make([]T, 0, batchSize)
+				if timeout > 0 {
+					ticker.Reset(timeout)
+				}
 			}
-			return
 		case v, ok := <-ch:
 			if !ok { // closed
-				fn(batch)
 				return
 			}
 			if v, ok := v.(T); ok {
 				batch = append(batch, v)
 			}
 			if len(batch) == batchSize { // full
-				fn(batch)
-				batch = make([]T, 0, batchSize) // reset
-			}
-		default:
-			if len(batch) > 0 { // partial
-				fn(batch)
-				batch = make([]T, 0, batchSize) // reset
-			} else { // empty
-				// wait for more
-				select {
-				case <-expire:
-					return
-				case v, ok := <-ch:
-					if !ok {
-						return
-					}
-
-					if v, ok := v.(T); ok {
-						batch = append(batch, v)
+				if len(batch) > 0 {
+					fn(batch)
+					batch = make([]T, 0, batchSize)
+					if timeout > 0 {
+						ticker.Reset(timeout)
 					}
 				}
-
 			}
 		}
 	}
